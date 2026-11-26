@@ -1,0 +1,181 @@
+
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Real Estate Trend Analysis</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    body { background:#f8fafc; }
+    .card { margin-top:20px; }
+    #chart-container { height:400px; }
+  </style>
+</head>
+<body>
+<div class="container">
+  <nav class="navbar bg-dark navbar-dark mb-4 rounded-3">
+    <div class="container-fluid">
+      <a class="navbar-brand" href="#">🏠 Real Estate Trend Analysis</a>
+    </div>
+  </nav>
+
+  <div class="row g-3">
+    <div class="col-md-3">
+      <label class="form-label">Year Built (optional)</label>
+      <select id="yearSelect" class="form-select"><option value="">All</option></select>
+    </div>
+    <div class="col-md-3">
+      <label class="form-label">Location</label>
+      <select id="locationSelect" class="form-select"><option value="">All</option></select>
+    </div>
+    <div class="col-md-3">
+      <label class="form-label">Metric</label>
+      <select id="metricSelect" class="form-select">
+        <option value="Price" selected>Price</option>
+        <option value="AvgArea">Area</option>
+      </select>
+    </div>
+    <div class="col-md-3 d-flex align-items-end">
+      <button id="btnRefresh" class="btn btn-primary w-100">Refresh</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-body">
+      <div id="chart-container">
+        <canvas id="trendChart"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-body">
+      <h5>Recommendation</h5>
+      <div id="recommendationArea">Loading...</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-body">
+      <h5>Comparison Table</h5>
+      <div id="tableArea">Loading...</div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+let rawSummary = [];
+let predictions = [];
+let chart = null;
+
+async function loadData() {
+  const [sRes, pRes] = await Promise.all([fetch('/api/summary'), fetch('/api/predictions')]);
+  rawSummary = await sRes.json();
+  predictions = await pRes.json();
+  populateControls();
+  renderChart();
+  renderRecommendation();
+  renderTable();
+}
+
+function populateControls() {
+  const years = Array.from(new Set(rawSummary.map(r => r.YearBuilt))).sort((a,b)=>a-b);
+  const yearSelect = document.getElementById('yearSelect');
+  yearSelect.innerHTML = '<option value="">All</option>' + years.map(y=>`<option value="${y}">${y}</option>`).join('');
+  const locs = Array.from(new Set(rawSummary.map(r=>r.Location))).sort();
+  const locSelect = document.getElementById('locationSelect');
+  locSelect.innerHTML = '<option value="">All</option>' + locs.map(l=>`<option value="${l}">${l}</option>`).join('');
+}
+
+function getFilteredSummary() {
+  const year = document.getElementById('yearSelect').value;
+  const loc = document.getElementById('locationSelect').value;
+  const metric = document.getElementById('metricSelect').value;
+  let data = rawSummary.slice();
+  if (year) data = data.filter(d=>String(d.YearBuilt)===String(year));
+  if (loc) data = data.filter(d=>d.Location===loc);
+  // aggregate per YearBuilt for chart
+  const grouped = {};
+  data.forEach(d=>{
+    const key = d.YearBuilt;
+    if (!grouped[key]) grouped[key] = {YearBuilt: d.YearBuilt, AvgPrice: 0, AvgArea:0, Count:0};
+    grouped[key].AvgPrice += d.AvgPrice;
+    grouped[key].AvgArea += d.AvgArea;
+    grouped[key].Count += 1;
+  });
+  const arr = Object.values(grouped).map(x=>({YearBuilt:x.YearBuilt, AvgPrice: x.AvgPrice/x.Count, AvgArea: x.AvgArea/x.Count})).sort((a,b)=>a.YearBuilt-b.YearBuilt);
+  return arr;
+}
+
+function renderChart() {
+  const data = getFilteredSummary();
+  const labels = data.map(d=>d.YearBuilt);
+  const metric = document.getElementById('metricSelect').value;
+  const values = data.map(d=> metric==='Price' ? d.AvgPrice : d.AvgArea);
+  const ctx = document.getElementById('trendChart').getContext('2d');
+  if (chart) chart.destroy();
+  chart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: labels,
+      datasets: [{
+        label: metric==='Price' ? 'Average Price' : 'Average Area',
+        data: values,
+        fill: false,
+        tension: 0.2
+      }]
+    },
+    options: {
+      responsive: true,
+      scales: {
+        y: { beginAtZero: true }
+      }
+    }
+  });
+}
+
+function renderRecommendation() {
+  if (!predictions || predictions.length===0) {
+    document.getElementById('recommendationArea').innerText = 'No prediction available';
+    return;
+  }
+  const top = predictions[0];
+  const html = `
+    <p><strong>Best Location (by predicted % growth):</strong> ${top.Location}</p>
+    <p>Current Avg Price: ₹${Number(top.CurrentAvgPrice).toLocaleString()}</p>
+    <p>Predicted Price Next Year: ₹${Number(top.PredictedPrice_nextYear).toLocaleString()}</p>
+    <p>Growth: ${top.PctChange_nextYear}%</p>
+    <p>Recommendation: ${top.Recommendation}</p>
+  `;
+  document.getElementById('recommendationArea').innerHTML = html;
+}
+
+function renderTable() {
+  if (!predictions) return;
+  const rows = predictions.map(p=>`<tr>
+    <td>${p.Location}</td>
+    <td>₹${Number(p.CurrentAvgPrice).toLocaleString()}</td>
+    <td>₹${Number(p.PredictedPrice_nextYear).toLocaleString()}</td>
+    <td>${p.PctChange_nextYear}%</td>
+    <td>${p.Recommendation}</td>
+  </tr>`).join('');
+  const table = `<table class="table table-striped">
+    <thead><tr><th>Location</th><th>Current Avg</th><th>Predicted Next Year</th><th>Growth %</th><th>Recommendation</th></tr></thead>
+    <tbody>${rows}</tbody></table>`;
+  document.getElementById('tableArea').innerHTML = table;
+}
+
+document.getElementById('btnRefresh').addEventListener('click', ()=>{
+  renderChart();
+  renderRecommendation();
+  renderTable();
+});
+
+loadData();
+</script>
+
+</body>
+</html>
